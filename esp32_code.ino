@@ -1,259 +1,868 @@
-/*
- * IoT Environmental Monitoring System
- * University of Moratuwa EN2853 Programming Assignment 2
- * Author: Hasitha Sandun
- */
-
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include "DHTesp.h"
-#include <ESP32Servo.h>
-
-// WiFi credentials
-const char* ssid = "Wokwi-GUEST";
-const char* password = "";
-
-// MQTT Broker settings
-const char* mqtt_server = "broker.hivemq.com";
-const int mqtt_port = 1883;
-const char* mqtt_client_id = "esp32_hasithasandun";
-
-// MQTT Topics
-const char* topic_temp = "hasithasandun/temperature";
-const char* topic_humid = "hasithasandun/humidity";
-const char* topic_light = "hasithasandun/light";
-const char* topic_servo = "hasithasandun/servo";
-const char* topic_alert = "hasithasandun/alert";
-const char* topic_servo_control = "hasithasandun/servo_control";
-const char* topic_temp_threshold = "hasithasandun/temp_threshold";
-
-// Pin definitions
-const int DHT_PIN = 15;       // DHT22 data pin
-const int LDR_PIN = 34;       // Light sensor analog pin
-const int BUZZER_PIN = 12;    // Buzzer pin
-const int SERVO_PIN = 26;     // Servo motor pin
-
-// Threshold values
-float temp_threshold = 30.0;  // Temperature threshold for alert (can be changed via MQTT)
-int light_threshold = 2000;   // Light threshold for servo control
-
-// Variables
-float temperature = 0.0;
-float humidity = 0.0;
-int lightLevel = 0;
-bool autoMode = true;         // Servo control mode (auto/manual)
-int servoAngle = 0;
-
-// Timing variables
-unsigned long lastSensorReadTime = 0;
-unsigned long lastMQTTPublishTime = 0;
-const long sensorReadInterval = 2000;    // Read sensors every 2 seconds
-const long mqttPublishInterval = 5000;   // Publish to MQTT every 5 seconds
-
-// Object instances
-WiFiClient espClient;
-PubSubClient client(espClient);
-DHTesp dht;
-Servo servo;
-
-void setup() {
-  // Initialize serial communication
-  Serial.begin(115200);
-  Serial.println("IoT Environmental Monitoring System");
-  Serial.println("Author: Hasitha Sandun");
-  
-  // Initialize pins
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(LDR_PIN, INPUT);
-  
-  // Initialize DHT sensor
-  dht.setup(DHT_PIN, DHTesp::DHT22);
-  
-  // Initialize servo
-  ESP32PWM::allocateTimer(0);
-  servo.setPeriodHertz(50);    // Standard 50Hz servo
-  servo.attach(SERVO_PIN, 500, 2400);  // Attach servo with min/max pulse width
-  servo.write(0);  // Initial position
-  
-  // Connect to WiFi
-  setupWiFi();
-  
-  // Connect to MQTT broker
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
-}
-
-void loop() {
-  // Ensure WiFi and MQTT connection
-  if (!client.connected()) {
-    reconnect();
-  }
-  client.loop();
-
-  // Read sensors at regular intervals
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastSensorReadTime >= sensorReadInterval) {
-    lastSensorReadTime = currentMillis;
-    readSensors();
-    
-    // Check if temperature exceeds threshold for alert
-    if (temperature > temp_threshold) {
-      triggerAlert();
-    } else {
-      digitalWrite(BUZZER_PIN, LOW); // Turn off buzzer
-    }
-    
-    // Control servo based on mode (auto/manual)
-    if (autoMode) {
-      controlServoAuto();
-    }
-  }
-  
-  // Publish to MQTT at regular intervals
-  if (currentMillis - lastMQTTPublishTime >= mqttPublishInterval) {
-    lastMQTTPublishTime = currentMillis;
-    publishData();
-  }
-}
-
-// Read sensor values
-void readSensors() {
-  // Read temperature and humidity
-  TempAndHumidity data = dht.getTempAndHumidity();
-  temperature = data.temperature;
-  humidity = data.humidity;
-  
-  // Read light level
-  lightLevel = analogRead(LDR_PIN);
-  
-  // Print values to serial for debugging
-  Serial.println("Sensor Readings:");
-  Serial.print("Temperature: "); Serial.print(temperature); Serial.println(" °C");
-  Serial.print("Humidity: "); Serial.print(humidity); Serial.println(" %");
-  Serial.print("Light Level: "); Serial.println(lightLevel);
-}
-
-// Publish data to MQTT broker
-void publishData() {
-  // Convert values to strings
-  char tempStr[8];
-  char humidStr[8];
-  char lightStr[8];
-  char servoStr[8];
-  
-  dtostrf(temperature, 1, 2, tempStr);
-  dtostrf(humidity, 1, 2, humidStr);
-  itoa(lightLevel, lightStr, 10);
-  itoa(servoAngle, servoStr, 10);
-  
-  // Publish to respective topics
-  client.publish(topic_temp, tempStr);
-  client.publish(topic_humid, humidStr);
-  client.publish(topic_light, lightStr);
-  client.publish(topic_servo, servoStr);
-  
-  Serial.println("Data published to MQTT broker");
-}
-
-// Setup WiFi connection
-void setupWiFi() {
-  delay(10);
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  
-  WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-}
-
-// Reconnect to MQTT broker
-void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    if (client.connect(mqtt_client_id)) {
-      Serial.println("connected");
-      
-      // Subscribe to topics for incoming commands
-      client.subscribe(topic_servo_control);
-      client.subscribe(topic_temp_threshold);
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" trying again in 5 seconds");
-      delay(5000);
-    }
-  }
-}
-
-// MQTT message callback
-void callback(char* topic, byte* payload, unsigned int length) {
-  // Convert payload to string
-  payload[length] = '\0';
-  String message = String((char*)payload);
-  
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  Serial.println(message);
-  
-  // Handle servo control messages
-  if (String(topic) == topic_servo_control) {
-    if (message.startsWith("AUTO")) {
-      autoMode = true;
-      Serial.println("Servo control mode set to AUTO");
-    } else if (message.startsWith("MANUAL")) {
-      autoMode = false;
-      int angle = message.substring(6).toInt();
-      if (angle >= 0 && angle <= 180) {
-        servoAngle = angle;
-        servo.write(servoAngle);
-        Serial.print("Servo manually set to angle: ");
-        Serial.println(servoAngle);
-      }
-    }
-  }
-  
-  // Handle temperature threshold messages
-  if (String(topic) == topic_temp_threshold) {
-    float newThreshold = message.toFloat();
-    if (newThreshold > 0 && newThreshold < 100) {
-      temp_threshold = newThreshold;
-      Serial.print("Temperature threshold updated to: ");
-      Serial.println(temp_threshold);
-    }
-  }
-}
-
-// Control servo automatically based on light level
-void controlServoAuto() {
-  // Map light level to servo angle (inverse relationship)
-  int newAngle = map(lightLevel, 0, 4095, 180, 0);
-  
-  // Only update if angle changed significantly to avoid jitter
-  if (abs(newAngle - servoAngle) > 5) {
-    servoAngle = newAngle;
-    servo.write(servoAngle);
-    Serial.print("Auto servo adjustment to angle: ");
-    Serial.println(servoAngle);
-  }
-}
-
-// Trigger alert when temperature exceeds threshold
-void triggerAlert() {
-  digitalWrite(BUZZER_PIN, HIGH);
-  Serial.println("ALERT: Temperature threshold exceeded!");
-  
-  // Send alert message to MQTT
-  char alertMsg[50];
-  sprintf(alertMsg, "Temperature Alert: %.2f°C exceeds threshold %.2f°C", temperature, temp_threshold);
-  client.publish(topic_alert, alertMsg);
+{
+    "version": 1,
+    "author": "sahas_eashan",
+    "editor": "wokwi",
+    "parts": [
+        {
+            "type": "wokwi-breadboard",
+            "id": "bb1",
+            "top": -51,
+            "left": 60.4,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-breadboard-half",
+            "id": "bb2",
+            "top": -51,
+            "left": -266,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-esp32-devkit-v1",
+            "id": "esp",
+            "top": -302.5,
+            "left": 331,
+            "attrs": {}
+        },
+        {
+            "type": "board-ssd1306",
+            "id": "oled1",
+            "top": 12.74,
+            "left": 537.83,
+            "attrs": {
+                "i2cAddress": "0x3c"
+            }
+        },
+        {
+            "type": "wokwi-led",
+            "id": "led1",
+            "top": -42,
+            "left": 301.4,
+            "attrs": {
+                "color": "red"
+            }
+        },
+        {
+            "type": "wokwi-buzzer",
+            "id": "bz1",
+            "top": -84,
+            "left": 433.8,
+            "attrs": {
+                "volume": "0.1"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r1",
+            "top": 13.55,
+            "left": 230.4,
+            "attrs": {
+                "value": "220"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r2",
+            "top": 13.55,
+            "left": 403.2,
+            "attrs": {
+                "value": "100"
+            }
+        },
+        {
+            "type": "wokwi-pushbutton",
+            "id": "btn1",
+            "top": 22.7,
+            "left": 112.7,
+            "rotate": 90,
+            "attrs": {
+                "color": "red",
+                "label": "Cancel"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r3",
+            "top": 90.35,
+            "left": 86.4,
+            "attrs": {
+                "value": "1000"
+            }
+        },
+        {
+            "type": "wokwi-pushbutton",
+            "id": "btn2",
+            "top": 32.3,
+            "left": -213.7,
+            "rotate": 90,
+            "attrs": {
+                "color": "yellow",
+                "label": "Up"
+            }
+        },
+        {
+            "type": "wokwi-pushbutton",
+            "id": "btn3",
+            "top": 22.7,
+            "left": -117.7,
+            "rotate": 90,
+            "attrs": {
+                "color": "blue",
+                "label": "OK/Menu/Snooze"
+            }
+        },
+        {
+            "type": "wokwi-pushbutton",
+            "id": "btn4",
+            "top": 32.3,
+            "left": -21.7,
+            "rotate": 90,
+            "attrs": {
+                "color": "green",
+                "label": "Down"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r4",
+            "top": 90.35,
+            "left": -240,
+            "attrs": {
+                "value": "1000"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r5",
+            "top": 90.35,
+            "left": -144,
+            "attrs": {
+                "value": "1000"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r6",
+            "top": 90.35,
+            "left": -48,
+            "attrs": {
+                "value": "1000"
+            }
+        },
+        {
+            "type": "wokwi-dht22",
+            "id": "dht1",
+            "top": -431.7,
+            "left": 157.8,
+            "attrs": {
+                "humidity": "76.5",
+                "temperature": "28.9"
+            }
+        },
+        {
+            "type": "wokwi-led",
+            "id": "led2",
+            "top": -42,
+            "left": 205.4,
+            "attrs": {
+                "color": "yellow"
+            }
+        },
+        {
+            "type": "wokwi-resistor",
+            "id": "r7",
+            "top": 13.55,
+            "left": 326.4,
+            "attrs": {
+                "value": "220"
+            }
+        },
+        {
+            "type": "wokwi-photoresistor-sensor",
+            "id": "ldr1",
+            "top": 179.3,
+            "left": 186.7,
+            "rotate": 270,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-servo",
+            "id": "servo1",
+            "top": 103.6,
+            "left": 412.8,
+            "attrs": {}
+        }
+    ],
+    "connections": [
+        [
+            "esp:TX0",
+            "$serialMonitor:RX",
+            "",
+            []
+        ],
+        [
+            "esp:RX0",
+            "$serialMonitor:TX",
+            "",
+            []
+        ],
+        [
+            "bb1:15t.c",
+            "bb1:tn.9",
+            "black",
+            [
+                "v0",
+                "h-28"
+            ]
+        ],
+        [
+            "esp:D34",
+            "btn1:2.l",
+            "green",
+            [
+                "h0"
+            ]
+        ],
+        [
+            "btn1:1.l",
+            "bb1:tn.6",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:1b.j",
+            "bb1:bp.3",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:tp.1",
+            "bb2:tp.25",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:tn.1",
+            "bb2:tn.25",
+            "black",
+            [
+                "v-0.1",
+                "h-68"
+            ]
+        ],
+        [
+            "bb1:bp.1",
+            "bb2:bp.25",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:bn.1",
+            "bb2:bn.25",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:bp.17",
+            "r6:1",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:bp.9",
+            "r5:1",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:bp.1",
+            "r4:1",
+            "red",
+            [
+                "v-0.9",
+                "h-8"
+            ]
+        ],
+        [
+            "btn4:2.l",
+            "esp:D35",
+            "green",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "btn3:2.l",
+            "esp:D32",
+            "green",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "btn2:2.l",
+            "esp:D33",
+            "green",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:29t.a",
+            "bb2:tn.24",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:19t.a",
+            "bb2:tn.16",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb2:9t.a",
+            "bb2:tn.7",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "dht1:VCC",
+            "bb1:tp.7",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "dht1:GND",
+            "bb1:tn.10",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "dht1:SDA",
+            "esp:D12",
+            "green",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:tn.50",
+            "bb1:bn.50",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:tp.49",
+            "bb1:bp.49",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "esp:GND.1",
+            "bb1:tn.48",
+            "black",
+            [
+                "h0"
+            ]
+        ],
+        [
+            "esp:3V3",
+            "bb1:tp.47",
+            "red",
+            [
+                "h191.7",
+                "v105.3"
+            ]
+        ],
+        [
+            "esp:D21",
+            "bb1:55t.a",
+            "green",
+            [
+                "h0"
+            ]
+        ],
+        [
+            "esp:D22",
+            "bb1:54t.a",
+            "blue",
+            [
+                "h0"
+            ]
+        ],
+        [
+            "bb1:tp.43",
+            "bb1:53t.a",
+            "red",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:tn.42",
+            "bb1:52t.a",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "esp:D5",
+            "bb1:41t.b",
+            "blue",
+            [
+                "h86.1",
+                "v220.8"
+            ]
+        ],
+        [
+            "r2:1",
+            "bb1:tn.27",
+            "black",
+            [
+                "v0"
+            ]
+        ],
+        [
+            "bb1:25t.c",
+            "bb1:tn.19",
+            "black",
+            [
+                "h-9.6",
+                "v-47.9"
+            ]
+        ],
+        [
+            "bb1:32t.b",
+            "esp:D15",
+            "orange",
+            [
+                "v-105.6",
+                "h76.8",
+                "v-67"
+            ]
+        ],
+        [
+            "bb1:22t.a",
+            "esp:D2",
+            "orange",
+            [
+                "v-86.4",
+                "h182.4",
+                "v-86.4",
+                "h-38.1"
+            ]
+        ],
+        [
+            "btn2:1.l",
+            "bb2:9t.d",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn2:2.l",
+            "bb2:7t.d",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn2:1.r",
+            "bb2:9b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn2:2.r",
+            "bb2:7b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn3:1.l",
+            "bb2:19t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn3:2.l",
+            "bb2:17t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn3:1.r",
+            "bb2:19b.h",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn3:2.r",
+            "bb2:17b.h",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn4:1.l",
+            "bb2:29t.d",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn4:2.l",
+            "bb2:27t.d",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn4:1.r",
+            "bb2:29b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn4:2.r",
+            "bb2:27b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r4:1",
+            "bb2:1b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r4:2",
+            "bb2:7b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r5:1",
+            "bb2:11b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r5:2",
+            "bb2:17b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r6:1",
+            "bb2:21b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r6:2",
+            "bb2:27b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "ldr1:VCC",
+            "bb1:bp.11",
+            "red",
+            [
+                "v-9.6",
+                "h-19.2"
+            ]
+        ],
+        [
+            "ldr1:GND",
+            "bb1:bn.21",
+            "black",
+            [
+                "v-9.6",
+                "h57.2",
+                "v28.8"
+            ]
+        ],
+        [
+            "ldr1:AO",
+            "esp:VP",
+            "cyan",
+            [
+                "v-67.2",
+                "h239.3",
+                "v-268.8",
+                "h0",
+                "v-96",
+                "h-220.8",
+                "v38.4"
+            ]
+        ],
+        [
+            "servo1:GND",
+            "bb1:bn.26",
+            "black",
+            [
+                "h0"
+            ]
+        ],
+        [
+            "servo1:V+",
+            "bb1:bp.25",
+            "red",
+            [
+                "h-28.8",
+                "v-28.7"
+            ]
+        ],
+        [
+            "esp:D13",
+            "servo1:PWM",
+            "magenta",
+            [
+                "h-38.4",
+                "v211",
+                "h67.2",
+                "v124.8",
+                "h0"
+            ]
+        ],
+        [
+            "led1:A",
+            "bb1:26t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "led1:C",
+            "bb1:25t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "bz1:1",
+            "bb1:40t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "bz1:2",
+            "bb1:41t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r1:1",
+            "bb1:16t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r1:2",
+            "bb1:22t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r2:1",
+            "bb1:34t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r2:2",
+            "bb1:40t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn1:1.l",
+            "bb1:9t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn1:2.l",
+            "bb1:7t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn1:1.r",
+            "bb1:9b.h",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "btn1:2.r",
+            "bb1:7b.h",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r3:1",
+            "bb1:1b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r3:2",
+            "bb1:7b.i",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "led2:A",
+            "bb1:16t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "led2:C",
+            "bb1:15t.a",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r7:1",
+            "bb1:26t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "r7:2",
+            "bb1:32t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "oled1:GND",
+            "bb1:52t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "oled1:VCC",
+            "bb1:53t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "oled1:SCL",
+            "bb1:54t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ],
+        [
+            "oled1:SDA",
+            "bb1:55t.c",
+            "",
+            [
+                "$bb"
+            ]
+        ]
+    ],
+    "dependencies": {}
 }
