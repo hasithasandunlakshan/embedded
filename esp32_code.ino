@@ -1,225 +1,259 @@
-#include <WiFi.h> // For connecting to the internet
-#include <PubSubClient.h> // For MQTT connectivity
-#include "DHTesp.h"  // For interfacing with DHT temperature and humidity sensor
-#include <WiFiUdp.h>
-#include <ESP32Servo.h> // For controlling servo motors on ESP32 microcontrollers
+/*
+ * IoT Environmental Monitoring System
+ * University of Moratuwa EN2853 Programming Assignment 2
+ * Author: Hasitha Sandun
+ */
 
-//defining the PIN
-#define DHT_PIN 15
-#define LDR1 35 
-#define LDR2 34 
-#define MOTOR 18 
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include "DHTesp.h"
+#include <ESP32Servo.h>
 
-/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+// WiFi credentials
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
 
-float minAngle=30.0;
-float controlFac=0.75;
+// MQTT Broker settings
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+const char* mqtt_client_id = "esp32_hasithasandun";
 
-float select_medicine = 0;
+// MQTT Topics
+const char* topic_temp = "hasithasandun/temperature";
+const char* topic_humid = "hasithasandun/humidity";
+const char* topic_light = "hasithasandun/light";
+const char* topic_servo = "hasithasandun/servo";
+const char* topic_alert = "hasithasandun/alert";
+const char* topic_servo_control = "hasithasandun/servo_control";
+const char* topic_temp_threshold = "hasithasandun/temp_threshold";
 
-float minAngle_A =28;
-float controlFac_A =0.55;
+// Pin definitions
+const int DHT_PIN = 15;       // DHT22 data pin
+const int LDR_PIN = 34;       // Light sensor analog pin
+const int BUZZER_PIN = 12;    // Buzzer pin
+const int SERVO_PIN = 26;     // Servo motor pin
 
-float minAngle_B =26;
-float controlFac_B =0.65;
+// Threshold values
+float temp_threshold = 30.0;  // Temperature threshold for alert (can be changed via MQTT)
+int light_threshold = 2000;   // Light threshold for servo control
 
-float minAngle_C =25;
-float controlFac_C =0.6;
+// Variables
+float temperature = 0.0;
+float humidity = 0.0;
+int lightLevel = 0;
+bool autoMode = true;         // Servo control mode (auto/manual)
+int servoAngle = 0;
 
-Servo motor;
+// Timing variables
+unsigned long lastSensorReadTime = 0;
+unsigned long lastMQTTPublishTime = 0;
+const long sensorReadInterval = 2000;    // Read sensors every 2 seconds
+const long mqttPublishInterval = 5000;   // Publish to MQTT every 5 seconds
 
-//Wifi and mqtt clients
+// Object instances
 WiFiClient espClient;
-PubSubClient mqttClient(espClient); 
-DHTesp dhtSensor;
-
-char tempAr[6];  // Array to store temperature data for MQTT transmission
-char lightAr[6]; // Array to store light data for MQTT transmission
-char humidAr[6]; // Array to store humidity data for MQTT transmission
-
-void setupWifi();
-void calculateAngle(double lightintensity, double D);
+PubSubClient client(espClient);
+DHTesp dht;
+Servo servo;
 
 void setup() {
+  // Initialize serial communication
   Serial.begin(115200);
-  setupWifi();
-  setupMqtt();
-  dhtSensor.setup(DHT_PIN, DHTesp::DHT22); 
-
-  pinMode(LDR1, INPUT);
-  pinMode(LDR2, INPUT);
-
-  motor.attach(MOTOR, 500, 2400);
-}
-
-// main loop function
-void loop() {
-  if(!mqttClient.connected()){ 
-    connectToBroker(); 
-  }
-  mqttClient.loop(); 
-
-  updateHumidity();
-  Serial.println("Humidity Value - " + String(humidAr));
-  mqttClient.publish("HUMIDITY-VAL",humidAr); 
-
-  updateTemperature();
-  Serial.println("Temperature Value - " + String(tempAr));
-  mqttClient.publish("TEMPERATURE-VAL",tempAr); 
-
-  updateLightIntensity(); 
-  mqttClient.publish("LIGHT-INTENSITY",lightAr);
-
-  delay(1000);
+  Serial.println("IoT Environmental Monitoring System");
+  Serial.println("Author: Hasitha Sandun");
   
+  // Initialize pins
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LDR_PIN, INPUT);
+  
+  // Initialize DHT sensor
+  dht.setup(DHT_PIN, DHTesp::DHT22);
+  
+  // Initialize servo
+  ESP32PWM::allocateTimer(0);
+  servo.setPeriodHertz(50);    // Standard 50Hz servo
+  servo.attach(SERVO_PIN, 500, 2400);  // Attach servo with min/max pulse width
+  servo.write(0);  // Initial position
+  
+  // Connect to WiFi
+  setupWiFi();
+  
+  // Connect to MQTT broker
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
 }
 
-/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
-//Configuring MQTT server connection 
+void loop() {
+  // Ensure WiFi and MQTT connection
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
 
-void setupMqtt(){
-  // Change to your computer's IP address as seen from the Wokwi simulator
-  mqttClient.setServer("10.10.0.1", 1883);  // Use your computer's local IP address here
-  mqttClient.setCallback(receiveCallback);
+  // Read sensors at regular intervals
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastSensorReadTime >= sensorReadInterval) {
+    lastSensorReadTime = currentMillis;
+    readSensors();
+    
+    // Check if temperature exceeds threshold for alert
+    if (temperature > temp_threshold) {
+      triggerAlert();
+    } else {
+      digitalWrite(BUZZER_PIN, LOW); // Turn off buzzer
+    }
+    
+    // Control servo based on mode (auto/manual)
+    if (autoMode) {
+      controlServoAuto();
+    }
+  }
+  
+  // Publish to MQTT at regular intervals
+  if (currentMillis - lastMQTTPublishTime >= mqttPublishInterval) {
+    lastMQTTPublishTime = currentMillis;
+    publishData();
+  }
 }
 
-void setupWifi(){
+// Read sensor values
+void readSensors() {
+  // Read temperature and humidity
+  TempAndHumidity data = dht.getTempAndHumidity();
+  temperature = data.temperature;
+  humidity = data.humidity;
+  
+  // Read light level
+  lightLevel = analogRead(LDR_PIN);
+  
+  // Print values to serial for debugging
+  Serial.println("Sensor Readings:");
+  Serial.print("Temperature: "); Serial.print(temperature); Serial.println(" °C");
+  Serial.print("Humidity: "); Serial.print(humidity); Serial.println(" %");
+  Serial.print("Light Level: "); Serial.println(lightLevel);
+}
+
+// Publish data to MQTT broker
+void publishData() {
+  // Convert values to strings
+  char tempStr[8];
+  char humidStr[8];
+  char lightStr[8];
+  char servoStr[8];
+  
+  dtostrf(temperature, 1, 2, tempStr);
+  dtostrf(humidity, 1, 2, humidStr);
+  itoa(lightLevel, lightStr, 10);
+  itoa(servoAngle, servoStr, 10);
+  
+  // Publish to respective topics
+  client.publish(topic_temp, tempStr);
+  client.publish(topic_humid, humidStr);
+  client.publish(topic_light, lightStr);
+  client.publish(topic_servo, servoStr);
+  
+  Serial.println("Data published to MQTT broker");
+}
+
+// Setup WiFi connection
+void setupWiFi() {
+  delay(10);
   Serial.println();
   Serial.print("Connecting to ");
-  Serial.println("Wokwi-GUEST");
-  WiFi.begin("Wokwi-GUEST", "");
-
-  while (WiFi.status() != WL_CONNECTED){
+  Serial.println(ssid);
+  
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
-  //After connection
+  
+  Serial.println("");
   Serial.println("WiFi connected");
-  Serial.println("IP adress:");
+  Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
-/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
-//setting message reception callback
-
-void receiveCallback(char* topic, byte* payload, unsigned int length){ 
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-
-  char payloadCharAr[length+1]; // Add +1 for null terminator
-  for (int i = 0; i < length; i++){
-    Serial.print((char)payload[i]);
-    payloadCharAr[i] = (char)payload[i];
-  }
-  payloadCharAr[length] = '\0'; // Add null terminator
-
-  Serial.println();
-
-  if (strcmp(topic,"OFFSET-ANG")==0){
-      minAngle = atof(payloadCharAr);
-      Serial.println(minAngle);
-  }
-  if (strcmp(topic,"CONTROL-FAC")==0){
-      controlFac = atof(payloadCharAr);
-      Serial.println(controlFac);
-  }
-  if (strcmp(topic,"DROP-DOWN")==0){
-      select_medicine = atof(payloadCharAr);
-      Serial.println(select_medicine);
-  }
-}
-
-/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
-// Function to establish connection with MQTT broker and subscribe to relevant topics
-
-void connectToBroker(){ 
-  while(!mqttClient.connected()){
+// Reconnect to MQTT broker
+void reconnect() {
+  while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP32-";
-    clientId += String(random(0xffff), HEX);
-    
-    // Try to connect
-    if(mqttClient.connect(clientId.c_str())){
+    if (client.connect(mqtt_client_id)) {
       Serial.println("connected");
-      mqttClient.subscribe("OFFSET-ANG");
-      mqttClient.subscribe("CONTROL-FAC");
-      mqttClient.subscribe("DROP-DOWN");  
-    } else{
+      
+      // Subscribe to topics for incoming commands
+      client.subscribe(topic_servo_control);
+      client.subscribe(topic_temp_threshold);
+    } else {
       Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" retrying in 5 seconds");
+      Serial.print(client.state());
+      Serial.println(" trying again in 5 seconds");
       delay(5000);
     }
   }
 }
 
-void updateTemperature(){
-  TempAndHumidity data = dhtSensor.getTempAndHumidity(); 
-  String(data.temperature, 2).toCharArray(tempAr, 6);
-}
-
-void updateHumidity(){
-  TempAndHumidity data = dhtSensor.getTempAndHumidity(); 
-  String(data.humidity, 2).toCharArray(humidAr, 6);
-}
-
-/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
- // Calculate light intensity by LDRS
-
-void updateLightIntensity() {
-  float sensorRight = analogRead(LDR1); 
-  float sensorLeft = analogRead(LDR2);
-  Serial.println("Right LDR Value - " + String(sensorRight));
-  Serial.println("Left LDR Value - " + String(sensorLeft));
-
-  if(sensorRight > sensorLeft) { 
-    mqttClient.publish("MAXIMUM-INT-LDR","RIGHT LDR SHOWS MAXIMUM INTENSITY"); 
-    double D = 0.5;
-    float intensity = (sensorRight)/(4063); 
-    Serial.println("LDR_Right : "+String(sensorRight)+"  "+String(intensity));
-    String(intensity, 2).toCharArray(lightAr, 6);
-    calculateAngle(intensity,D);
-   
-  }else if(sensorRight < sensorLeft){
-    mqttClient.publish("MAXIMUM-INT-LDR","LEFT LDR SHOWS MAXIMUM INTENSITY"); 
-    double D = 1.5;
-    float intensity = (sensorLeft)/(4063-32);
-    Serial.println("LDR_Left : "+String(sensorLeft)+"  "+String(intensity));
-    String(intensity, 2).toCharArray(lightAr, 6);
-    calculateAngle(intensity,D);
-
-  }else{
-    mqttClient.publish("MAXIMUM-INT-LDR","BOTH SHOWS SAME INTENSITY"); 
-    double D = 0; 
-    float intensity = (sensorLeft)/(4063-32);
-    Serial.println("LDR_Left = LDR_Right : "+String(sensorLeft)+"  "+String(intensity));
-    String(intensity, 2).toCharArray(lightAr, 6);
-    calculateAngle(intensity,D);  
+// MQTT message callback
+void callback(char* topic, byte* payload, unsigned int length) {
+  // Convert payload to string
+  payload[length] = '\0';
+  String message = String((char*)payload);
+  
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(message);
+  
+  // Handle servo control messages
+  if (String(topic) == topic_servo_control) {
+    if (message.startsWith("AUTO")) {
+      autoMode = true;
+      Serial.println("Servo control mode set to AUTO");
+    } else if (message.startsWith("MANUAL")) {
+      autoMode = false;
+      int angle = message.substring(6).toInt();
+      if (angle >= 0 && angle <= 180) {
+        servoAngle = angle;
+        servo.write(servoAngle);
+        Serial.print("Servo manually set to angle: ");
+        Serial.println(servoAngle);
+      }
+    }
+  }
+  
+  // Handle temperature threshold messages
+  if (String(topic) == topic_temp_threshold) {
+    float newThreshold = message.toFloat();
+    if (newThreshold > 0 && newThreshold < 100) {
+      temp_threshold = newThreshold;
+      Serial.print("Temperature threshold updated to: ");
+      Serial.println(temp_threshold);
+    }
   }
 }
 
-void calculateAngle(double lightintensity,double D){
-  if(select_medicine == 1){ 
-    double angle = minAngle_A *D +(180.0-minAngle_A)*lightintensity*controlFac_A ;
-    Serial.println("Servo motor angle is : " + String(angle));
-    motor.write(angle);
+// Control servo automatically based on light level
+void controlServoAuto() {
+  // Map light level to servo angle (inverse relationship)
+  int newAngle = map(lightLevel, 0, 4095, 180, 0);
+  
+  // Only update if angle changed significantly to avoid jitter
+  if (abs(newAngle - servoAngle) > 5) {
+    servoAngle = newAngle;
+    servo.write(servoAngle);
+    Serial.print("Auto servo adjustment to angle: ");
+    Serial.println(servoAngle);
   }
-  else if(select_medicine == 2){
-    double angle = minAngle_B *D +(180.0-minAngle_B)*lightintensity*controlFac_B;
-    Serial.println("Servo motor angle is : " + String(angle));
-    motor.write(angle);
-  }
-  else if(select_medicine == 3){  
-    double angle = minAngle_C *D +(180.0-minAngle_C)*lightintensity*controlFac_C;
-    Serial.println("Servo motor angle is : " + String(angle));
-    motor.write(angle); 
-  }
-  else{
-    double angle = minAngle *D +(180.0-minAngle)*lightintensity*controlFac; 
-    Serial.println("Servo motor angle is : " + String(angle));
-    motor.write(angle);
-  }
-} 
+}
+
+// Trigger alert when temperature exceeds threshold
+void triggerAlert() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  Serial.println("ALERT: Temperature threshold exceeded!");
+  
+  // Send alert message to MQTT
+  char alertMsg[50];
+  sprintf(alertMsg, "Temperature Alert: %.2f°C exceeds threshold %.2f°C", temperature, temp_threshold);
+  client.publish(topic_alert, alertMsg);
+}
