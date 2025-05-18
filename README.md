@@ -1,15 +1,13 @@
 # Medibox with Node-RED Integration
 
-This project implements a smart medication box (Medibox) using ESP32 with Node-RED dashboard integration for remote monitoring and control of medication alarms.
+This project implements a smart medication box (Medibox) using ESP32 with Node-RED dashboard integration for monitoring environmental conditions and controlling a shaded sliding window.
 
 ## Features
 
-- Set and manage medication alarms through ESP32 or Node-RED dashboard
 - Real-time temperature and humidity monitoring
 - Environmental alerts for medication storage conditions
-- Remote alarm management via MQTT and Node-RED
 - Time synchronization using NTP
-- Visual and audible medication reminders
+- Visual and audible alerts
 - **Light intensity monitoring with configurable sampling intervals**
 - **Automatic shaded sliding window control using servo motor**
 - **Adaptive environment control based on light and temperature conditions**
@@ -21,97 +19,45 @@ This project implements a smart medication box (Medibox) using ESP32 with Node-R
 - OLED Display (128x64)
 - Buzzer for alerts
 - Push buttons for user interface
-- LED for alarm indication
+- LED for indication
 - **LDR (Light Dependent Resistor) for light intensity monitoring**
 - **Servo motor for controlling the shaded sliding window**
 
 ## Wokwi Simulation
 
-The project is set up to run on the Wokwi simulator. The diagram.json file contains the circuit configuration for the simulation.
+The project is set up to run on the Wokwi simulator. The diagram.json file contains the circuit configuration.
 
-### Setting up Wokwi
+## MQTT Topics
 
-1. Go to [Wokwi](https://wokwi.com/)
-2. Create a new ESP32 project
-3. Copy the contents of `diagram.json` to your project's diagram.json
-4. Copy the contents of `esp32_code.ino` to your project's sketch file
-5. Add the required libraries in the Libraries manager:
-   - DHTesp
-   - Adafruit GFX Library
-   - Adafruit SSD1306
-   - PubSubClient
-   - ArduinoJson (version 6.x)
-6. Click "Start Simulation"
+The Medibox communicates with Node-RED using the following MQTT topics:
 
-## Node-RED Dashboard
-
-The project includes a Node-RED flow for visualization and control of the Medibox system.
-
-### Setting up Node-RED
-
-1. Install Node-RED if you haven't already:
-   ```
-   npm install -g node-red
-   ```
-
-2. Install required Node-RED packages:
-   ```
-   cd ~/.node-red
-   npm install node-red-dashboard
-   npm install node-red-contrib-ui-led
-   ```
-
-3. Start Node-RED:
-   ```
-   node-red
-   ```
-
-4. Access Node-RED in your browser at `http://localhost:1880`
-
-5. Import the flow by selecting Menu → Import → Clipboard, and paste the contents of `node-red-flow.json`
-
-6. Deploy the flow and access the dashboard at `http://localhost:1880/ui`
-
-## MQTT Communication
-
-This project uses MQTT for communication between the ESP32 and Node-RED. We're using the HiveMQ public broker for simplicity.
-
-### MQTT Topics
-
-- `medibox/temperature` - Current temperature readings
-- `medibox/humidity` - Current humidity readings
-- `medibox/alarms` - Information about configured alarms
-- `medibox/status` - Overall system status
-- `medibox/command` - Used to send commands to the ESP32
+- `medibox/temperature` - Current temperature reading
+- `medibox/humidity` - Current humidity reading
+- `medibox/status` - Device status information
 - `medibox/light` - Light intensity readings
 - `medibox/motor` - Servo motor angle updates
 - `medibox/config` - Configuration parameters
 
-## Dashboard Features
+## Node-RED Dashboard
 
-The Node-RED dashboard provides:
+The Node-RED dashboard provides the following functionality:
 
 1. **Environmental Metrics**
-   - Real-time temperature and humidity gauges
-   - Historical charts of environmental conditions
+   - Temperature and humidity gauges
+   - Historical charts
 
-2. **Alarm Management**
-   - View and set medication alarms
-   - Add new alarms through the interface
-   - View active alarm status
-
-3. **System Status**
-   - Connection status
+2. **System Status**
+   - Device connectivity
    - Current time
-   - Environmental status indicators
+   - Environmental status
 
-4. **Light Intensity Monitoring**
+3. **Light Intensity Monitoring**
    - Real-time light intensity display
    - Historical light intensity chart
    - Configurable sampling intervals
    - Configurable data sending intervals
 
-5. **Shade Controller**
+4. **Shade Controller**
    - Servo angle display
    - Minimum angle configuration (θoffset)
    - Controlling factor adjustment (γ)
@@ -156,9 +102,8 @@ You can configure the Medibox parameters directly from the Node-RED dashboard:
 
 1. The Medibox automatically monitors temperature, humidity, and light intensity
 2. The servo motor adjusts the shaded window based on environmental conditions
-3. Set alarms for medication times using the physical buttons or Node-RED dashboard
-4. Receive visual and audible alerts when it's time to take medication
-5. Adjust configuration parameters based on specific medication requirements
+3. Use the physical buttons on the ESP32 to navigate the local menu if needed
+4. Adjust configuration parameters based on specific environmental requirements
 
 ## Troubleshooting
 

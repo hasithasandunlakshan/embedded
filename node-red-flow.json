@@ -187,154 +187,6 @@
         ]
     },
     {
-        "id": "7dbc35d.daa2a1c",
-        "type": "mqtt in",
-        "z": "1c7e3b7b.51d995",
-        "name": "Alarms",
-        "topic": "medibox/alarms",
-        "qos": "0",
-        "datatype": "json",
-        "broker": "fe864f9b.eb5e8",
-        "nl": false,
-        "rap": true,
-        "rh": 0,
-        "x": 150,
-        "y": 400,
-        "wires": [
-            [
-                "ab7a418.3d8125"
-            ]
-        ]
-    },
-    {
-        "id": "ab7a418.3d8125",
-        "type": "ui_template",
-        "z": "1c7e3b7b.51d995",
-        "group": "5c799f9d.a4bcf",
-        "name": "Alarms List",
-        "order": 1,
-        "width": "8",
-        "height": "4",
-        "format": "<div ng-repeat=\"alarm in msg.payload\">\n    <div style=\"margin: 10px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;\">\n        <h3>Alarm {{$index + 1}}</h3>\n        <p>Time: {{alarm.hours}}:{{alarm.minutes < 10 ? '0' + alarm.minutes : alarm.minutes}}</p>\n        <p style=\"color: {{alarm.active ? 'green' : 'red'}}\">Status: {{alarm.active ? 'Active' : 'Inactive'}}</p>\n    </div>\n</div>",
-        "storeOutMessages": true,
-        "fwdInMessages": true,
-        "resendOnRefresh": true,
-        "templateScope": "local",
-        "x": 370,
-        "y": 400,
-        "wires": [
-            []
-        ]
-    },
-    {
-        "id": "cd3a3e8b.33f48",
-        "type": "ui_button",
-        "z": "1c7e3b7b.51d995",
-        "name": "Add Alarm",
-        "group": "5c799f9d.a4bcf",
-        "order": 2,
-        "width": "4",
-        "height": "1",
-        "passthru": false,
-        "label": "Add New Alarm",
-        "tooltip": "",
-        "color": "",
-        "bgcolor": "",
-        "icon": "fa-plus",
-        "payload": "{\"command\":\"add_alarm\"}",
-        "payloadType": "json",
-        "topic": "medibox/command",
-        "topicType": "str",
-        "x": 160,
-        "y": 480,
-        "wires": [
-            [
-                "3aa3cf4b.bfbb3"
-            ]
-        ]
-    },
-    {
-        "id": "3aa3cf4b.bfbb3",
-        "type": "mqtt out",
-        "z": "1c7e3b7b.51d995",
-        "name": "Send Command",
-        "topic": "medibox/command",
-        "qos": "",
-        "retain": "",
-        "respTopic": "",
-        "contentType": "",
-        "userProps": "",
-        "correl": "",
-        "expiry": "",
-        "broker": "fe864f9b.eb5e8",
-        "x": 380,
-        "y": 480,
-        "wires": []
-    },
-    {
-        "id": "2c17b0e3.d4cae",
-        "type": "ui_form",
-        "z": "1c7e3b7b.51d995",
-        "name": "Set Alarm",
-        "label": "Set New Alarm",
-        "group": "5c799f9d.a4bcf",
-        "order": 3,
-        "width": "8",
-        "height": "4",
-        "options": [
-            {
-                "label": "Hours",
-                "value": "hours",
-                "type": "number",
-                "required": true,
-                "rows": null
-            },
-            {
-                "label": "Minutes",
-                "value": "minutes",
-                "type": "number",
-                "required": true,
-                "rows": null
-            }
-        ],
-        "formValue": {
-            "hours": "",
-            "minutes": ""
-        },
-        "payload": "",
-        "submit": "Set Alarm",
-        "cancel": "Cancel",
-        "topic": "medibox/set_alarm",
-        "topicType": "str",
-        "splitLayout": "",
-        "x": 150,
-        "y": 540,
-        "wires": [
-            [
-                "8ebf33d.1e96bc"
-            ]
-        ]
-    },
-    {
-        "id": "8ebf33d.1e96bc",
-        "type": "function",
-        "z": "1c7e3b7b.51d995",
-        "name": "Format Alarm",
-        "func": "// Validate inputs\nlet hours = parseInt(msg.payload.hours);\nlet minutes = parseInt(msg.payload.minutes);\n\nif (isNaN(hours) || hours < 0 || hours > 23) {\n    return null;\n}\n\nif (isNaN(minutes) || minutes < 0 || minutes > 59) {\n    return null;\n}\n\nmsg.payload = {\n    command: \"set_alarm\",\n    hours: hours,\n    minutes: minutes\n};\n\nreturn msg;",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 370,
-        "y": 540,
-        "wires": [
-            [
-                "3aa3cf4b.bfbb3"
-            ]
-        ]
-    },
-    {
         "id": "f2db88bc.91ace8",
         "type": "mqtt in",
         "z": "1c7e3b7b.51d995",
@@ -347,7 +199,7 @@
         "rap": true,
         "rh": 0,
         "x": 150,
-        "y": 600,
+        "y": 400,
         "wires": [
             [
                 "92a85a37.b57248"
@@ -369,61 +221,9 @@
         "resendOnRefresh": true,
         "templateScope": "local",
         "x": 380,
-        "y": 600,
+        "y": 400,
         "wires": [
             []
-        ]
-    },
-    {
-        "id": "6c1fd652.9b5098",
-        "type": "ui_switch",
-        "z": "1c7e3b7b.51d995",
-        "name": "Enable/Disable Alarms",
-        "label": "Enable Alarms",
-        "tooltip": "",
-        "group": "b0e25c20.09d3e",
-        "order": 2,
-        "width": "4",
-        "height": "1",
-        "passthru": true,
-        "decouple": "false",
-        "topic": "medibox/toggle_alarm",
-        "topicType": "str",
-        "style": "",
-        "onvalue": "true",
-        "onvalueType": "bool",
-        "onicon": "",
-        "oncolor": "",
-        "offvalue": "false",
-        "offvalueType": "bool",
-        "officon": "",
-        "offcolor": "",
-        "animate": false,
-        "x": 190,
-        "y": 660,
-        "wires": [
-            [
-                "a7c98d4a.3b097"
-            ]
-        ]
-    },
-    {
-        "id": "a7c98d4a.3b097",
-        "type": "function",
-        "z": "1c7e3b7b.51d995",
-        "name": "Toggle Alarm Command",
-        "func": "msg.payload = {\n    command: \"toggle_alarm\",\n    enabled: msg.payload\n};\nreturn msg;",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 400,
-        "y": 660,
-        "wires": [
-            [
-                "3aa3cf4b.bfbb3"
-            ]
         ]
     },
     {
@@ -439,7 +239,7 @@
         "rap": true,
         "rh": 0,
         "x": 170,
-        "y": 760,
+        "y": 480,
         "wires": [
             [
                 "b4d8e523.fa9d98",
@@ -470,7 +270,7 @@
         "seg1": "0.3",
         "seg2": "0.7",
         "x": 400,
-        "y": 720,
+        "y": 480,
         "wires": []
     },
     {
@@ -511,7 +311,7 @@
         "outputs": 1,
         "useDifferentColor": false,
         "x": 400,
-        "y": 760,
+        "y": 540,
         "wires": [
             []
         ]
@@ -536,7 +336,7 @@
         "step": 1,
         "className": "",
         "x": 190,
-        "y": 820,
+        "y": 600,
         "wires": [
             [
                 "e6e3b2c4.cc4f3"
@@ -563,7 +363,7 @@
         "step": 10,
         "className": "",
         "x": 190,
-        "y": 860,
+        "y": 640,
         "wires": [
             [
                 "e6e3b2c4.cc4f3"
@@ -582,7 +382,7 @@
         "finalize": "",
         "libs": [],
         "x": 410,
-        "y": 860,
+        "y": 680,
         "wires": [
             [
                 "a0a86ed6.bfa75"
@@ -604,7 +404,7 @@
         "expiry": "",
         "broker": "fe864f9b.eb5e8",
         "x": 640,
-        "y": 860,
+        "y": 680,
         "wires": []
     },
     {
@@ -620,7 +420,7 @@
         "rap": true,
         "rh": 0,
         "x": 170,
-        "y": 980,
+        "y": 720,
         "wires": [
             [
                 "66d5b726.61fdd8"
@@ -650,7 +450,7 @@
         "seg1": "",
         "seg2": "",
         "x": 390,
-        "y": 980,
+        "y": 720,
         "wires": []
     },
     {
@@ -673,7 +473,7 @@
         "step": 1,
         "className": "",
         "x": 180,
-        "y": 1040,
+        "y": 780,
         "wires": [
             [
                 "e6e3b2c4.cc4f3"
@@ -700,7 +500,7 @@
         "step": 0.05,
         "className": "",
         "x": 190,
-        "y": 1080,
+        "y": 820,
         "wires": [
             [
                 "e6e3b2c4.cc4f3"
@@ -727,7 +527,7 @@
         "step": 1,
         "className": "",
         "x": 190,
-        "y": 1120,
+        "y": 860,
         "wires": [
             [
                 "e6e3b2c4.cc4f3"
@@ -807,21 +607,11 @@
         "collapse": false
     },
     {
-        "id": "5c799f9d.a4bcf",
-        "type": "ui_group",
-        "name": "Alarms Management",
-        "tab": "ba370ab8.68ada8",
-        "order": 2,
-        "disp": true,
-        "width": "12",
-        "collapse": false
-    },
-    {
         "id": "b0e25c20.09d3e",
         "type": "ui_group",
         "name": "System Status",
         "tab": "ba370ab8.68ada8",
-        "order": 3,
+        "order": 2,
         "disp": true,
         "width": "12",
         "collapse": false
@@ -831,7 +621,7 @@
         "type": "ui_group",
         "name": "Light Intensity",
         "tab": "ba370ab8.68ada8",
-        "order": 4,
+        "order": 3,
         "disp": true,
         "width": "12",
         "collapse": false
@@ -841,7 +631,7 @@
         "type": "ui_group",
         "name": "Shade Controller",
         "tab": "ba370ab8.68ada8",
-        "order": 5,
+        "order": 4,
         "disp": true,
         "width": "12",
         "collapse": false
