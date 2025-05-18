@@ -1,1097 +1,515 @@
-#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <DHTesp.h>
 #include <WiFi.h>
-#include <time.h>
-#include <ESP32Servo.h>
-#include <PubSubClient.h>
-// Display and Pin Configurations
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3c
 
-#define BUZZER 5
-#define LED_1 15
-#define LED_2 2
-#define PB_CANCEL 34
-#define PB_OK 32
-#define PB_UP 33
-#define PB_DOWN 35
-#define DHTPIN 12
-#define SERVO_PIN 13
-
-#define NTP_SERVER "time.google.com"
+#define Screen_Width 128
+#define Screen_Height 64
+#define OLED_reset -1
+#define screen_address 0x3C
+#define Buzzer 14
+#define PB_Cancel 13
+#define PB_OK 33
+#define PB_UP 27
+#define PB_Down 32
+#define DHTPIN 25
+#define AlarmLed 15
+#define NTP_SERVER     "pool.ntp.org"
 #define UTC_OFFSET_DST 0
-#define LDR_PIN 36 // analog pin
 
-// MQTT Topic names
-#define TOPIC_MAIN_POWER "medibox/main/power"
-#define TOPIC_LIGHT "medibox/light/value"
-#define TOPIC_LIGHT_TS "medibox/light/ts"
-#define TOPIC_LIGHT_TU "medibox/light/tu"
-#define TOPIC_THETA_OFFSET "medibox/params/theta_offset"
-#define TOPIC_GAMMA "medibox/params/gamma"
-#define TOPIC_TMED "medibox/params/tmed"
+Adafruit_SSD1306 display(Screen_Width,Screen_Height,&Wire,OLED_reset);
+DHTesp dhtSensor;
 
-char tempAr[6];
-// LDR Configuration
-// Global Variables
-int UTC_OFFSET = 0;
-int offset_hours = 0;
-int offset_mins = 0;
-
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
 
 int days = 0;
 int hours = 0;
-int minutes = 0;
+int minitues = 0;
 int seconds = 0;
-String dayOfWeek = "";
-Servo shade_servo;
+int UTC_OFFSET = 0;
+int timezone_hours = 0;
+int timezone_minitues = 0;
+bool alarm_enabled = true;
+int n_alarms = 2;
+int alarm_hours[] = {9,9};
+int alarm_minitues[] = {30,32};
+bool alarm_triggered[] = {false,false};
+int current_mode = 0;
+int max_modes = 5;
+String modes[] = {"1-Set Time Zone","2-Set Alarm 1","3-Set Alarm 2","4 - Delete Alarm","5 - View Alarms"};
 
-float theta_offset = 30;
-float gammma = 0.75;
-float Tmed = 30.0;
-
-bool alarm_enabled = false;
-const int N_ALARMS = 3;
-int alarm_hours[N_ALARMS] = {0, 1, 0};
-int alarm_minutes[N_ALARMS] = {1, 10, 0};
-bool alarm_triggered[N_ALARMS] = {false, false, false};
-int temp_alarm_hour = 25; // to store the alarm time when the user presses the ok button _initially set to 25 to avoid any confusion with the actual time
-int temp_alarm_minute = 00;
-
-// Musical Notes
-const int N_NOTES = 8;
-const int MUSICAL_NOTES[] = {262, 294, 330, 349, 392, 440, 494, 523};
-
-// Menu Configuration
-enum MenuState
-{
-  HOME_SCREEN,
-  MAIN_MENU,
-  TIME_ZONE_SETTING,
-  ALARM_SETTING
-};
-#define MAX_SAMPLES 100
-float ldr_readings[MAX_SAMPLES];
-int ldr_index = 0;
-int ldr_sample_count = 24;
-
-unsigned long lastLdrSample = 0;
-unsigned long lastLdrUpload = 0;
-int valid_sample_count = 0;
-int ts = 5;   // Sampling interval (seconds)
-int tu = 120; // Upload interval (seconds)
-
-const int MAX_VISIBLE_MENU_ITEMS = 3;
-const String MENU_ITEMS[] = {
-    "Set Time Zone",
-    "Set Alarm 1",
-    "Set Alarm 2",
-    "Set Alarm 3",
-    "Disable Alarms"};
-
-const String DAYS_OF_WEEK[] = {
-    "Sunday", "Monday", "Tuesday", "Wednesday",
-    "Thursday", "Friday", "Saturday"};
-
-// Global Objects
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-DHTesp dhtSensor;
-
-// Current States
-MenuState currentState = HOME_SCREEN;
-int currentMenuIndex = 0;
-int menuScrollOffset = 0;
-
-/***************************************************************************************************
- * Function Prototypes
- **************************************************************************************************/
-void display_time();
-void update_time_with_check_alarm();
-void update_time();
-void go_to_menu();
-void handle_cancel_button();
-void reset_to_home_screen();
-void display_menu();
-int wait_for_menu_button();
-void set_time_zone();
-void set_alarm(int alarmIndex);
-void ring_alarm();
-void disable_all_alarms();
-void print_line(String text, int column, int row, int text_size);
-void check_temp();
-void sample_ldr();
-void reset_alarm_triggered();
-void update_servo_angle();
-void connectToBroker();
-void setupMqtt();
-void receiveCallback(char *topic, byte *payload, unsigned int length);
-void publish_light_average();
-
-/***************************************************************************************************
- * setup()
- * Initializes serial, pins, Wi-Fi, time, and OLED display.
- **************************************************************************************************/
 void setup()
 {
   Serial.begin(115200);
-
-  pinMode(BUZZER, OUTPUT);
-  pinMode(LED_1, OUTPUT);
-  pinMode(LED_2, OUTPUT);
-  pinMode(PB_CANCEL, INPUT_PULLUP);
-  pinMode(PB_OK, INPUT_PULLUP);
-  pinMode(PB_UP, INPUT_PULLUP);
-  pinMode(PB_DOWN, INPUT_PULLUP);
-  pinMode(LDR_PIN, INPUT);
-
-  dhtSensor.setup(DHTPIN, DHTesp::DHT22);
-  shade_servo.attach(SERVO_PIN);
-  shade_servo.setPeriodHertz(50);           // Standard 50Hz for servos
-  shade_servo.attach(SERVO_PIN, 500, 2400); // Min and max pulse widths
-
-  WiFi.begin("Wokwi-GUEST", "", 6);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(250);
-    Serial.println("Connecting to WiFi...");
-  }
-  Serial.println("WiFi connected!");
-
-  configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
-
-  struct tm timeinfo;
-  int tries = 0;
-  while (!getLocalTime(&timeinfo) && tries < 20)
-  {
-    Serial.println("Waiting for NTP time sync...");
-    delay(500);
-    tries++;
-  }
-  if (tries >= 20)
-  {
-    Serial.println("Failed to sync time from NTP!");
-  }
-  else
-  {
-    Serial.println("Time successfully synced!");
-  }
-
-  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
-  {
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
     Serial.println(F("SSD1306 allocation failed"));
-    for (;;)
-      ;
+    for(;;); 
   }
-
-  display.ssd1306_command(0x81);
-  display.ssd1306_command(0xFF);
-
-  display.clearDisplay();
-  display.setTextWrap(false);
-
-  display.setTextSize(2);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(10, 16);
-  display.println("Welcome");
-  display.setCursor(10, 36);
-  display.println("Medibox!");
   display.display();
-  delay(1000);
-
+  delay(2000);
   display.clearDisplay();
-  display.display();
-  setupMqtt();
-  Serial.println("Setup complete!");
+  print_line("Welcome to Medibox",0,0,2);
+  delay(2000);
+  display.clearDisplay();
+  pinMode(Buzzer, OUTPUT);
+  pinMode(AlarmLed, OUTPUT);  
+  pinMode(PB_OK, INPUT);
+  pinMode(PB_Cancel, INPUT);
+  pinMode(PB_UP, INPUT);
+  pinMode(PB_Down, INPUT);
+  
+  dhtSensor.setup(DHTPIN,DHTesp::DHT22);
+  WiFi.begin("Wokwi-GUEST", "", 6);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);
+    display.clearDisplay();
+    print_line("Coonnecting to wifi",0,0,2);
+  }
+  
+  display.clearDisplay();
+  print_line("Connected to the wifi",0,0,2);
+  configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
 }
 
-/***************************************************************************************************
- * loop()
- * Continuously checks time, handles button presses, and checks temperature.
- **************************************************************************************************/
 void loop()
 {
-  if (!mqttClient.connected())
-  {
-    connectToBroker();
-  }
-  mqttClient.loop();
   update_time_with_check_alarm();
-
-  sample_ldr();
-  update_servo_angle();
-
-  if (digitalRead(PB_OK) == LOW)
-  {
+  check_Temp_and_Humidity();
+  if(digitalRead(PB_OK)== LOW ){
     delay(200);
-    go_to_menu();
+    goToMenu();
+    
   }
-
-  if (digitalRead(PB_CANCEL) == LOW)
-  {
-    delay(200);
-    handle_cancel_button();
-  }
-
-  check_temp();
-  publish_light_average();
+  
 }
 
-/***************************************************************************************************
- * print_line()
- * Quick utility to print a line on the OLED.
- **************************************************************************************************/
-void print_line(String text, int column, int row, int text_size)
-{
-  display.setTextSize(text_size);
+
+void print_line(String text , int column,int row,int text_size){
+  display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(column, row);
+  display.setCursor(column,row);
   display.println(text);
   display.display();
 }
 
-/***************************************************************************************************
- * update_time()
- * Reads current local time from ESP32 system (NTP-synced) and updates global variables.
- **************************************************************************************************/
-void update_time()
-{
+void print_time_now(void){
+  display.clearDisplay();
+  print_line(String(days),0,0,2);
+  print_line(":",20,0,2);
+  print_line(String(hours),30,0,2);
+  print_line(":",50,0,2);
+  print_line(String(minitues),60,0,2);
+  print_line(":",80,0,2);
+  print_line(String(seconds),90,0,2);
+
+
+
+}
+
+//Updates the internal time variables based on the current local time.
+void updateTime(){
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo))
-  {
-    Serial.println("Failed to obtain time");
-    return;
+  getLocalTime(&timeinfo);
+  char timeHour[3];
+  strftime(timeHour,3,"%H",&timeinfo);
+  hours = atoi(timeHour);
+
+  char timeMinitue[3];
+  strftime(timeMinitue,3,"%M",&timeinfo);
+  minitues = atoi(timeMinitue);
+
+  char timeSecond[3];
+  strftime(timeSecond,3,"%S",&timeinfo);
+  seconds = atoi(timeSecond);
+
+  char timeDay[3];
+  strftime(timeDay,3,"%d",&timeinfo);
+  days = atoi(timeDay);
+
   }
 
-  hours = timeinfo.tm_hour;
-  minutes = timeinfo.tm_min;
-  seconds = timeinfo.tm_sec;
-  days = timeinfo.tm_mday;
-  dayOfWeek = DAYS_OF_WEEK[timeinfo.tm_wday];
-}
+  void update_time_with_check_alarm(){
+  updateTime();
+  print_time_now();
 
-/***************************************************************************************************
- * display_time()
- * Displays the current time, day, and alarm status on the OLED.
- **************************************************************************************************/
-void display_time()
-{
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print(dayOfWeek);
-  display.print(", ");
-  display.print(days);
-
-  display.setTextSize(3);
-  display.setCursor(10, 16);
-  char timeStr[10];
-  snprintf(timeStr, sizeof(timeStr), "%02d:%02d", hours, minutes);
-  display.print(timeStr);
-
-  display.setTextSize(1);
-  display.setCursor(110, 35);
-  snprintf(timeStr, sizeof(timeStr), "%02d", seconds);
-  display.print(timeStr);
-
-  display.fillRect(0, 56, display.width(), 8, WHITE);
-  display.setTextColor(BLACK);
-  display.setCursor(2, 57);
-  display.print(alarm_enabled ? "ALARM ACTIVE" : "ALARM OFF");
-
-  display.display();
-}
-
-/***************************************************************************************************
- * update_time_with_check_alarm()
- * Updates time, displays it if on home screen, and checks alarms.
- **************************************************************************************************/
-void update_time_with_check_alarm()
-{
-  update_time();
-
-  if (currentState == HOME_SCREEN)
-  {
-    display_time();
-  }
-
-  if (alarm_enabled)
-  {
-    for (int i = 0; i < N_ALARMS; i++)
-    {
-      if (!alarm_triggered[i] &&
-          alarm_hours[i] == hours &&
-          alarm_minutes[i] == minutes)
-      {
-        ring_alarm();
-        alarm_triggered[i] = true;
-      }
-      if (alarm_triggered[i] && temp_alarm_hour == hours && temp_alarm_minute == minutes)
-      {
-        ring_alarm();
-        alarm_triggered[i] = true;
+  if(alarm_enabled == true){
+    for(int i=0; i<n_alarms; i++){
+      if(alarm_triggered[i] == false && alarm_hours[i] == hours && alarm_minitues[i]== minitues){
+        ring_alarm(i);
       }
     }
   }
-}
+  }
 
-/***************************************************************************************************
- * set_time_zone()
- * Allows user to set hour and minute offsets for time zone in 5-minute increments.
- **************************************************************************************************/
-void set_time_zone()
-{
-  int temp_offset_hour = offset_hours;
-  int temp_offset_min = offset_mins;
-  bool canceled = false;
-
-  while (true)
-  {
+  void ring_alarm(int i){
     display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("Set Time Zone (Hour)");
-    display.setTextSize(2);
-    display.setCursor(20, 20);
-    display.print(temp_offset_hour);
-    display.print(" hrs");
-    display.display();
-
-    int pressed = wait_for_menu_button();
-    if (pressed == PB_UP)
-    {
-      temp_offset_hour = (temp_offset_hour + 1 > 14) ? -12 : temp_offset_hour + 1;
+    print_line("Medicine Time",0,0,2);
+    print_line("Alarm " + String(i+1),0,20,2);
+    
+    // Format time display
+    String hourStr = String(alarm_hours[i]);
+    if(alarm_hours[i] < 10) hourStr = "0" + hourStr;
+    String minStr = String(alarm_minitues[i]);
+    if(alarm_minitues[i] < 10) minStr = "0" + minStr;
+    print_line(hourStr + ":" + minStr,0,40,2);
+    
+    bool snooze_pressed = false;
+    
+    while(digitalRead(PB_Cancel) == HIGH && digitalRead(PB_OK) == HIGH){     
+      tone(Buzzer,256);
+      tone(Buzzer,290);
+      digitalWrite(AlarmLed, HIGH);
+      delay(200);
     }
-    else if (pressed == PB_DOWN)
-    {
-      temp_offset_hour = (temp_offset_hour - 1 < -12) ? 14 : temp_offset_hour - 1;
-    }
-    else if (pressed == PB_OK)
-    {
-      break;
-    }
-    else if (pressed == PB_CANCEL)
-    {
-      canceled = true;
-      break;
-    }
-  }
-
-  if (!canceled)
-  {
-    while (true)
-    {
+    
+    noTone(Buzzer);
+    digitalWrite(AlarmLed, LOW);
+    
+    // Determine if snooze was pressed
+    if(digitalRead(PB_OK) == LOW) {
+      snooze_alarm(i);
+    } else {
+      // Cancel was pressed
+      alarm_triggered[i] = true;
       display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.print("Set Time Zone (Mins)");
-
-      display.setTextSize(2);
-      display.setCursor(10, 20);
-      display.print(temp_offset_min);
-      display.print(" min");
-      display.display();
-
-      int pressed = wait_for_menu_button();
-      if (pressed == PB_UP)
-      {
-        temp_offset_min = (temp_offset_min + 5) % 60;
-      }
-      else if (pressed == PB_DOWN)
-      {
-        temp_offset_min = (temp_offset_min + 60 - 5) % 60;
-      }
-      else if (pressed == PB_OK)
-      {
-        offset_hours = temp_offset_hour;
-        offset_mins = temp_offset_min;
-
-        if (offset_hours < 0)
-        {
-          UTC_OFFSET = (offset_hours * 3600) - (offset_mins * 60);
-        }
-        else
-        {
-          UTC_OFFSET = (offset_hours * 3600) + (offset_mins * 60);
-        }
-        configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
-        break;
-      }
-      else if (pressed == PB_CANCEL)
-      {
-        canceled = true;
-        break;
-      }
+      print_line("Alarm",0,0,2);
+      print_line("Canceled",0,20,2);
+      delay(1000);
     }
   }
 
-  if (!canceled)
-  {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(10, 20);
-    display.print("TZ Updated");
-    display.display();
-    delay(1000);
-  }
-
-  reset_to_home_screen();
-}
-
-/***************************************************************************************************
- * set_alarm()
- * Allows the user to set one of the three alarms (hour + minute).
- **************************************************************************************************/
-void set_alarm(int alarmIndex)
-{
-  alarm_enabled = true;
-
-  int temp_hour = alarm_hours[alarmIndex];
-  int temp_minute = alarm_minutes[alarmIndex];
-  bool canceled = false;
-  bool hourSet = false;
-  bool minuteSet = false;
-
-  while (true)
-  {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("Set Alarm ");
-    display.print(alarmIndex + 1);
-
-    display.setTextSize(2);
-    display.setCursor(20, 20);
-    char alarmStr[10];
-    snprintf(alarmStr, sizeof(alarmStr), "%02d:%02d", temp_hour, temp_minute);
-    display.print(alarmStr);
-    display.display();
-
-    int pressed = wait_for_menu_button();
-    if (pressed == PB_UP)
-    {
-      temp_hour = (temp_hour + 1) % 24;
-    }
-    else if (pressed == PB_DOWN)
-    {
-      temp_hour = (temp_hour - 1 + 24) % 24;
-    }
-    else if (pressed == PB_OK)
-    {
-      alarm_hours[alarmIndex] = temp_hour;
-      hourSet = true;
-      break;
-    }
-    else if (pressed == PB_CANCEL)
-    {
-      canceled = true;
-      break;
+// Function to snooze alarm for 5 minutes
+void snooze_alarm(int alarm_index) {
+  // Calculate new alarm time (current time + 5 minutes)
+  int new_minutes = minitues + 5;
+  int new_hours = hours;
+  
+  // Handle minute overflow
+  if(new_minutes >= 60) {
+    new_minutes = new_minutes % 60;
+    new_hours += 1;
+    if(new_hours >= 24) {
+      new_hours = 0;
     }
   }
-
-  if (!canceled)
-  {
-    while (true)
-    {
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.print("Set Alarm Mins");
-
-      display.setTextSize(2);
-      display.setCursor(20, 20);
-      char alarmStr[10];
-      snprintf(alarmStr, sizeof(alarmStr), "%02d:%02d", temp_hour, temp_minute);
-      display.print(alarmStr);
-      display.display();
-
-      int pressed = wait_for_menu_button();
-      if (pressed == PB_UP)
-      {
-        temp_minute = (temp_minute + 1) % 60;
-      }
-      else if (pressed == PB_DOWN)
-      {
-        temp_minute = (temp_minute - 1 + 60) % 60;
-      }
-      else if (pressed == PB_OK)
-      {
-        alarm_minutes[alarmIndex] = temp_minute;
-        minuteSet = true;
-        break;
-      }
-      else if (pressed == PB_CANCEL)
-      {
-        canceled = true;
-        break;
-      }
-    }
-  }
-
-  if (!canceled && hourSet && minuteSet)
-  {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(10, 20);
-    display.print("Alarm ");
-    display.print(alarmIndex + 1);
-    display.setCursor(10, 40);
-    display.print("Set!");
-    display.display();
-    delay(1000);
-  }
-
-  reset_to_home_screen();
-}
-
-/***************************************************************************************************
- * ring_alarm()
- * Rings the buzzer, lights LED_1, and waits until PB_CANCEL is pressed or runs through a tone cycle.
- **************************************************************************************************/
-void ring_alarm()
-{
+  
+  alarm_hours[alarm_index] = new_hours;
+  alarm_minitues[alarm_index] = new_minutes;
+  alarm_triggered[alarm_index] = false;
+  
   display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(2);
-  display.setCursor(10, 20);
-  display.print("MEDICINE");
-  display.setCursor(20, 40);
-  display.print("TIME!");
-  display.display();
-  delay(100);
-
-  digitalWrite(LED_1, HIGH);
-
-  bool break_happened = false;
-  while (!break_happened && digitalRead(PB_CANCEL) == HIGH && digitalRead(PB_OK) == HIGH)
-  {
-    for (int i = 0; i < N_NOTES; i++)
-    {
-      // Check for Cancel button press
-      if (digitalRead(PB_CANCEL) == LOW)
-      {
-        delay(200);
-        break_happened = true;
-        display.clearDisplay();
-        alarm_enabled = false;
-        print_line("Alarm", 10, 20, 2);
-        print_line("OFF", 10, 50, 2);
-        noTone(BUZZER);
-        digitalWrite(LED_1, LOW);
-        delay(1000);
-        break;
-      }
-
-      // Check for OK button press
-      if (digitalRead(PB_OK) == LOW)
-      {
-        delay(200);
-        break_happened = true;
-        temp_alarm_hour = hours;
-        temp_alarm_minute = minutes + 5;
-        alarm_enabled = true;
-        display.clearDisplay();
-        print_line("Alarm", 10, 20, 2);
-        print_line("Snoozed", 10, 50, 2);
-        noTone(BUZZER);
-        digitalWrite(LED_1, LOW);
-        delay(1000);
-        break;
-      }
-
-      // Play tone with a slight delay
-      tone(BUZZER, MUSICAL_NOTES[i], 200);
-      delay(220);
-      noTone(BUZZER);
-      delay(20);
-    }
-  }
-
-  digitalWrite(LED_1, LOW);
-  reset_to_home_screen();
+  print_line("Alarm",0,0,2);
+  print_line("Snoozed",0,20,2);
+  print_line("5 minutes",0,40,2);
+  delay(1500);
 }
 
-/***************************************************************************************************
- * go_to_menu()
- * Handles the OK button press logic, switching states as needed.
- **************************************************************************************************/
-void go_to_menu()
-{
-  switch (currentState)
-  {
-  case HOME_SCREEN:
-    currentState = MAIN_MENU;
-    display_menu();
-    break;
-
-  case MAIN_MENU:
-    switch (currentMenuIndex)
-    {
-    case 0: // Set Time Zone
-      currentState = TIME_ZONE_SETTING;
-      set_time_zone();
-      break;
-    case 1:
-    case 2:
-    case 3: // Set Alarms
-      currentState = ALARM_SETTING;
-      set_alarm(currentMenuIndex - 1);
-      break;
-    case 4: // Disable Alarms
-      disable_all_alarms();
-      break;
-    }
-    break;
-  }
-}
-
-/***************************************************************************************************
- * handle_cancel_button()
- * Returns to home screen if cancel is pressed.
- **************************************************************************************************/
-void handle_cancel_button()
-{
-  reset_to_home_screen();
-}
-
-/***************************************************************************************************
- * reset_to_home_screen()
- * Resets the state to HOME_SCREEN and shows the time.
- **************************************************************************************************/
-void reset_to_home_screen()
-{
-  currentState = HOME_SCREEN;
-  currentMenuIndex = 0;
-  menuScrollOffset = 0;
-  display_time();
-}
-
-/***************************************************************************************************
- * wait_for_menu_button()
- * Waits for any button press related to the menu (UP, DOWN, OK, CANCEL).
- **************************************************************************************************/
-int wait_for_menu_button()
-{
-  while (true)
-  {
-    if (digitalRead(PB_UP) == LOW)
-    {
+int waitForButtonPress(){
+  while(true){
+ 
+    if(digitalRead(PB_UP)  == LOW){
       delay(200);
       return PB_UP;
     }
-    else if (digitalRead(PB_DOWN) == LOW)
-    {
+    else if(digitalRead(PB_Down )== LOW){
       delay(200);
-      return PB_DOWN;
+      return PB_Down;
     }
-    else if (digitalRead(PB_OK) == LOW)
-    {
+    else if(digitalRead(PB_OK )== LOW ){
       delay(200);
       return PB_OK;
     }
-    else if (digitalRead(PB_CANCEL) == LOW)
-    {
+    else if(digitalRead(PB_Cancel )== LOW){
       delay(200);
-      return PB_CANCEL;
+      return PB_Cancel;
     }
+    updateTime();
   }
 }
 
-/***************************************************************************************************
- * display_menu()
- * Shows the main menu and handles navigation (up/down).
- **************************************************************************************************/
-void display_menu()
-{
-  int totalMenuItems = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
-  int visibleItems = min(MAX_VISIBLE_MENU_ITEMS, totalMenuItems);
+  void goToMenu(){
+    while(digitalRead(PB_Cancel) == HIGH){
+        display.clearDisplay();
+        print_line(modes[current_mode],0,0,2);
+        delay(200);
+        int pressed =waitForButtonPress();
+        if(pressed == PB_UP){
+          delay(200);
+          current_mode +=1;
+          current_mode = current_mode % max_modes;
+        }
+        else if(pressed == PB_Down){
+          delay(200);
+          current_mode -=1;
+          if(current_mode < 0){
+            current_mode = max_modes - 1;
+          }
+        }
+        else if(pressed == PB_OK){
+          delay(200);       
+          run_mode(current_mode);
+        }
+        else if(pressed == PB_Cancel){
+          delay(200);
+          break;
+        }
+        
 
-  display.clearDisplay();
-  display.setTextSize(1);
-
-  for (int i = 0; i < visibleItems; i++)
-  {
-    int itemIndex = i + menuScrollOffset;
-    if (itemIndex >= totalMenuItems)
-      break;
-
-    if (itemIndex == currentMenuIndex)
-    {
-      display.fillRect(0, i * 20, SCREEN_WIDTH, 20, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK);
     }
-    else
-    {
-      display.setTextColor(SSD1306_WHITE);
-    }
-
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds(MENU_ITEMS[itemIndex], 0, 0, &x1, &y1, &w, &h);
-    int16_t x = (SCREEN_WIDTH - w) / 2;
-
-    display.setCursor(x, i * 20 + 10);
-    display.println(MENU_ITEMS[itemIndex]);
-    display.setTextColor(SSD1306_WHITE);
   }
 
-  display.display();
-
-  int pressed = wait_for_menu_button();
-  if (pressed == PB_UP)
-  {
-    if (currentMenuIndex == 0)
-      currentMenuIndex = totalMenuItems - 1;
-    else
-      currentMenuIndex--;
-
-    if (currentMenuIndex < menuScrollOffset)
-    {
-      menuScrollOffset = currentMenuIndex;
-    }
-    else if (currentMenuIndex >= menuScrollOffset + visibleItems)
-    {
-      menuScrollOffset = currentMenuIndex - visibleItems + 1;
-    }
-    display_menu();
-  }
-  else if (pressed == PB_DOWN)
-  {
-    if (currentMenuIndex == totalMenuItems - 1)
-      currentMenuIndex = 0;
-    else
-      currentMenuIndex++;
-
-    if (currentMenuIndex < menuScrollOffset)
-    {
-      menuScrollOffset = currentMenuIndex;
-    }
-    else if (currentMenuIndex >= menuScrollOffset + visibleItems)
-    {
-      menuScrollOffset = currentMenuIndex - visibleItems + 1;
-    }
-    display_menu();
-  }
-  else if (pressed == PB_OK)
-  {
-    go_to_menu();
-  }
-  else if (pressed == PB_CANCEL)
-  {
-    reset_to_home_screen();
-  }
-}
-
-/***************************************************************************************************
- * disable_all_alarms()
- * Disables all alarms and shows a brief message.
- **************************************************************************************************/
-void disable_all_alarms()
-{
-  alarm_enabled = false;
-  for (int i = 0; i < N_ALARMS; i++)
-  {
-    alarm_triggered[i] = false;
-  }
-
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setCursor(10, 20);
-  display.print("Alarms");
-  display.setCursor(20, 40);
-  display.print("Disabled");
-  display.display();
-
-  delay(1000);
-  reset_to_home_screen();
-}
-
-/***************************************************************************************************
- * check_temp()
- * Reads temperature/humidity and displays a big ALERT if out of the specified range.
- **************************************************************************************************/
-void check_temp()
-{
-  TempAndHumidity data = dhtSensor.getTempAndHumidity();
-  float temperature = data.temperature;
-  float humidity = data.humidity;
-  String(data.temperature, 2).toCharArray(tempAr, 6);
-
-  const float MIN_TEMP = 26.0;
-  const float MAX_TEMP = 32.0;
-  const float MIN_HUM = 60.0;
-  const float MAX_HUM = 80.0;
-
-  bool tempLow = temperature < MIN_TEMP;
-  bool tempHigh = temperature > MAX_TEMP;
-  bool humLow = humidity < MIN_HUM;
-  bool humHigh = humidity > MAX_HUM;
-
-  if (tempLow || tempHigh || humLow || humHigh)
-  {
+//set the time zone by getting offset from the user
+void set_time_zone(){
+    int temp_hours = timezone_hours;
+    while(true){
     display.clearDisplay();
-    display.setTextSize(3);
-    display.setTextColor(SSD1306_WHITE);
+    print_line("Enter hour: " + String(temp_hours),0,0,2);
+    int pressed = waitForButtonPress();
+        if(pressed == PB_UP){
+          delay(200);
+          temp_hours +=1;
+          if(temp_hours > 14){
+            temp_hours = -12;
+          }
+        }
+        else if(pressed == PB_Down){
+          delay(200);
+          temp_hours -=1;
+          if(temp_hours < -12){
+            temp_hours = 14;
+          }
+        }
+        else if(pressed == PB_OK){
+          delay(200);
+       
+          timezone_hours = temp_hours;
+          break;
+        }
+        else if(pressed == PB_Cancel){
+          delay(200);
+          break;
+        }
+        }
+    
+    int temp_minitues = timezone_minitues;
+    while(true){
+    display.clearDisplay();
+    print_line("Enter minite: " + String(temp_minitues),0,0,2);
+    int pressed = waitForButtonPress();
+        if(pressed == PB_UP){
+          delay(200);
+          temp_minitues +=15;
+          temp_minitues = temp_minitues % 60;
+        }
+        else if(pressed == PB_Down){
+          delay(200);
+          temp_minitues -=15;
+          if(temp_minitues < 0){
+            temp_minitues = 45;
+          }
+        }
+        else if(pressed == PB_OK){
+          delay(200);
+       
+          timezone_minitues = temp_minitues;
+          break;
+        }
+        else if(pressed == PB_Cancel){
+          delay(200);
+          break;
+        }
+        }
+        display.clearDisplay();        
+        UTC_OFFSET = 3600 * timezone_hours + 60* timezone_minitues;
+        configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
+        print_line("Time Zone is set",0,0,2);
+        delay(500);
 
-    int y = 0;
+}
 
-    display.setCursor(0, y);
-    display.println("ALERT!");
-    y += 35;
 
-    display.setTextSize(1);
+void set_alarm(int alarm){
+    int temp_hours =  alarm_hours[alarm];
+    while(true){
+    display.clearDisplay();
+    print_line("Enter hour: " + String(temp_hours),0,0,2);
+    int pressed =waitForButtonPress();
+        if(pressed == PB_UP){
+          delay(200);
+          temp_hours +=1;
+          temp_hours = temp_hours % 24;
+        }
+        else if(pressed == PB_Down){
+          delay(200);
+          temp_hours -=1;
+          if(temp_hours < 0){
+            temp_hours = 23;
+          }
+        }
+        else if(pressed == PB_OK){
+          delay(200);
+       
+         alarm_hours[alarm] = temp_hours;
+          break;
+        }
+        else if(pressed == PB_Cancel){
+          delay(200);
+          break;
+        }
+        }
+    
+    int temp_minitues =  alarm_minitues[alarm];
+    while(true){
+    display.clearDisplay();
+    print_line("Enter minite: " + String(temp_minitues),0,0,2);
+    int pressed = waitForButtonPress();
+        if(pressed == PB_UP){
+          delay(200);
+          temp_minitues +=1;
+          temp_minitues = temp_minitues % 60;
+        }
+        else if(pressed == PB_Down){
+          delay(200);
+          temp_minitues -=1;
+          if(temp_minitues < 0){
+            temp_minitues = 59;
+          }
+        }
+        else if(pressed == PB_OK){
+          delay(200);
+       
+          alarm_minitues[alarm] = temp_minitues;
+          break;
+        }
+        else if(pressed == PB_Cancel){
+          delay(200);
+          break;
+        }
+        }
+        display.clearDisplay();
+        alarm_enabled = true;
+        alarm_triggered[alarm] = false;     //If an alarm is canceled and then set again, the alarm should be set.
+        print_line("Alarm"+ String(alarm+1) +"is set",0,0,2);
+        delay(500);
 
-    if (tempLow)
-    {
-      display.setCursor(0, y);
-      display.println("Temp is TOO LOW!");
-      y += 12;
-    }
-    else if (tempHigh)
-    {
-      display.setCursor(0, y);
-      display.println("Temp is TOO HIGH!");
-      y += 12;
-    }
+}
 
-    if (humLow)
-    {
-      display.setCursor(0, y);
-      display.println("Humidity is LOW!");
-      y += 12;
-    }
-    else if (humHigh)
-    {
-      display.setCursor(0, y);
-      display.println("Humidity is HIGH!");
-      y += 12;
-    }
+// run mode that choose from the menu
+void run_mode(int mode){
+  if(mode == 0){
+   set_time_zone();
+  }
+  else if(mode == 1){
+    set_alarm(0);
 
-    display.display();
+  }
+  else if(mode == 2){
+    set_alarm(1);
+  }
+  else if(mode == 3){
+    delete_specific_alarm();
+  }
+  else if(mode == 4){
+    view_alarms();
+  }
+}
 
-    for (int i = 0; i < 4; i++)
-    {
-      digitalWrite(LED_2, HIGH);
+// check temperature and humidity
+void check_Temp_and_Humidity(){
+  TempAndHumidity data = dhtSensor.getTempAndHumidity();
+  if (data.temperature>32){
+    display.clearDisplay();
+    print_line("Temparature is high",0,20,1);
+    delay(500);
+  }
+  else if (data.temperature<24){
+    display.clearDisplay();
+    print_line("Temparature is low",0,20,1);
+    delay(500);
+  }
+  if (data.humidity>80){
+    display.clearDisplay();
+    print_line("Humidity is high",0,20,1);
+    delay(500);
+  }
+  else if (data.humidity<65){
+    display.clearDisplay();
+    print_line("Humidity is low",0,20,1);
+    delay(500);
+  }
+
+}
+
+// Function to delete a specific alarm
+void delete_specific_alarm() {
+  int alarm_index = 0;
+  while(true) {
+    display.clearDisplay();
+    print_line("Delete Alarm " + String(alarm_index + 1),0,0,2);
+    print_line(String(alarm_hours[alarm_index]) + ":" + String(alarm_minitues[alarm_index]),0,20,2);
+    
+    int pressed = waitForButtonPress();
+    if(pressed == PB_UP) {
       delay(200);
-      digitalWrite(LED_2, LOW);
+      alarm_index = (alarm_index + 1) % n_alarms;
+    }
+    else if(pressed == PB_Down) {
       delay(200);
+      alarm_index--;
+      if(alarm_index < 0) {
+        alarm_index = n_alarms - 1;
+      }
     }
-
-    delay(1000);
-
-    if (currentState == HOME_SCREEN)
-    {
-      display_time();
+    else if(pressed == PB_OK) {
+      delay(200);
+      // Reset the alarm time to indicate it's inactive (midnight)
+      alarm_hours[alarm_index] = 0;
+      alarm_minitues[alarm_index] = 0;
+      alarm_triggered[alarm_index] = false;
+      display.clearDisplay();
+      print_line("Alarm " + String(alarm_index + 1) + " deleted",0,0,2);
+      delay(1000);
+      break;
     }
-  }
-}
-
-/***************************************************************************************************
- * void update_sampling_parameters(int new_ts, int new_tu)
- * change sampling paramiters according to chnged tu and ts.
- **************************************************************************************************/
-
-void update_sampling_parameters(int new_ts, int new_tu)
-{
-  ts = new_ts;
-  tu = new_tu;
-
-  ldr_sample_count = tu / ts;
-  if (ldr_sample_count > MAX_SAMPLES)
-  {
-    ldr_sample_count = MAX_SAMPLES; // prevent overflow
-  }
-
-  ldr_index = 0; // reset buffer position
-}
-
-/***************************************************************************************************
- * float read_ldr_normalized()
- * Reads the LDR value and normalizes it to a range of 0-1.
- **************************************************************************************************/
-float read_ldr_normalized()
-{
-  int raw = analogRead(LDR_PIN);
-  return raw / 4095.0; // Normalize to 0-1
-}
-/***************************************************************************************************
- * void sample_ldr()
- * Samples the LDR value at regular intervals and stores it in a circular buffer.
- **************************************************************************************************/
-void sample_ldr()
-{
-  if (millis() - lastLdrSample >= ts * 1000)
-  {
-    ldr_readings[ldr_index] = read_ldr_normalized();
-    // Serial.print("LDR[");
-    // Serial.print(ldr_index);
-    // Serial.print("] = ");
-    // Serial.println(ldr_readings[ldr_index], 4);
-
-    ldr_index = (ldr_index + 1) % ldr_sample_count;
-
-    if (valid_sample_count < ldr_sample_count)
-    {
-      valid_sample_count++;
-    }
-
-    lastLdrSample = millis();
-  }
-}
-/***************************************************************************************************
- * float calculate_average_ldr()
- * Calculates the average of the LDR readings stored in the circular buffer.loop
- **************************************************************************************************/
-float calculate_average_ldr()
-{
-  if (valid_sample_count == 0)
-    return 0;
-
-  float sum = 0;
-  for (int i = 0; i < valid_sample_count; i++)
-  {
-    sum += ldr_readings[i];
-  }
-  return sum / valid_sample_count;
-}
-
-/***************************************************************************************************
- * void update_servo_angle()
- * Calculates the servo angle based on LDR readings and temperature, then updates the servo position.
- **************************************************************************************************/
-void update_servo_angle()
-{
-  float I = calculate_average_ldr(); // 0 to 1
-  float T = dhtSensor.getTempAndHumidity().temperature;
-
-  float ratio = log((float)ts / tu);
-  float theta = theta_offset + (180 - theta_offset) * I * gammma * ratio * (T / Tmed); // corrected variable name
-
-  theta = constrain(theta, 0, 180); // safety
-  shade_servo.write((int)theta);
-}
-
-/***************************************************************************************************
- * void recieveCallback()
- * Callback function for MQTT messages.
- **************************************************************************************************/
-void recieveCallback(char *topic, byte *payload, unsigned int length)
-{
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-
-  char payloadCharAr[length + 1]; // +1 for null-terminator
-  for (int i = 0; i < length; i++)
-  {
-    Serial.print((char)payload[i]);
-    payloadCharAr[i] = (char)payload[i];
-  }
-  payloadCharAr[length] = '\0'; // Null-terminate the string
-
-  Serial.println();
-
-  if (strcmp(topic, TOPIC_MAIN_POWER) == 0)
-  {
-    if (payloadCharAr[0] == '1')
-    {
-      Serial.println("Turning ON");
-      tone(BUZZER, 1000, 200);
-    }
-    else if (payloadCharAr[0] == '0')
-    {
-      Serial.println("Turning OFF");
-      noTone(BUZZER);
-    }
-  }
-  else if (strcmp(topic, TOPIC_LIGHT_TU) == 0)
-  {
-    int new_tu = atoi(payloadCharAr);
-    update_sampling_parameters(ts, new_tu);
-    Serial.print("Updated tu = ");
-    Serial.println(new_tu);
-  }
-  else if (strcmp(topic, TOPIC_LIGHT_TS) == 0)
-  {
-    int new_ts = atoi(payloadCharAr);
-    update_sampling_parameters(new_ts, tu);
-    Serial.print("Updated ts = ");
-    Serial.println(new_ts);
-  }
-  else if (strcmp(topic, TOPIC_THETA_OFFSET) == 0) {
-  theta_offset = atof(payloadCharAr);
-  Serial.print("Updated theta_offset: ");
-  Serial.println(theta_offset);
-  }
-  else if (strcmp(topic, TOPIC_GAMMA) == 0) {
-    gammma = atof(payloadCharAr);
-    Serial.print("Updated gamma: ");
-    Serial.println(gammma);
-  }
-  else if (strcmp(topic, TOPIC_TMED) == 0) {
-    Tmed = atof(payloadCharAr);
-    Serial.print("Updated Tmed: ");
-    Serial.println(Tmed);
-  }
-}
-
-/***************************************************************************************************
- * void setupMqtt()
- * Sets up the MQTT client with the server and callback.
- **************************************************************************************************/
-
-void setupMqtt()
-{
-  mqttClient.setServer("test.mosquitto.org", 1883);
-  mqttClient.setCallback(recieveCallback);
-}
-
-/***************************************************************************************************
- * void connectToBroker()
- * Connects to the MQTT broker and subscribes to topics.
- **************************************************************************************************/
-void connectToBroker()
-{
-  while (!mqttClient.connected())
-  {
-    Serial.println("Attempting MQTT connetion");
-    if (mqttClient.connect("ESP32-75645365"))
-    {
-      Serial.println("connected");
-      mqttClient.subscribe(TOPIC_MAIN_POWER);
-      mqttClient.subscribe(TOPIC_LIGHT_TU);
-      mqttClient.subscribe(TOPIC_LIGHT_TS);
-      mqttClient.subscribe(TOPIC_THETA_OFFSET);
-      mqttClient.subscribe(TOPIC_GAMMA);
-      mqttClient.subscribe(TOPIC_TMED);
-    }
-    else
-    {
-      Serial.print("failed");
-      Serial.println(mqttClient.state());
-      delay(5000);
+    else if(pressed == PB_Cancel) {
+      delay(200);
+      break;
     }
   }
 }
 
-/***************************************************************************************************
- * void publish_light_average()
- * Publishes the average LDR reading to the MQTT broker.
- **************************************************************************************************/
-void publish_light_average()
-{
-  float avg = calculate_average_ldr();
-  char buffer[10];
-  dtostrf(avg, 4, 2, buffer);
-  mqttClient.publish(TOPIC_LIGHT, buffer, true); // Retain = true
-  Serial.println(buffer);
-  lastLdrUpload = millis();
+// Function to view all active alarms
+void view_alarms() {
+  display.clearDisplay();
+  print_line("Active Alarms:",0,0,2);
+  delay(1000);
+  
+  bool found_active = false;
+  for(int i = 0; i < n_alarms; i++) {
+    // Check if this alarm is active (not triggered and enabled)
+    if(!alarm_triggered[i] && alarm_hours[i] != 0 && alarm_minitues[i] != 0 && alarm_enabled) {
+      found_active = true;
+      display.clearDisplay();
+      print_line("Alarm " + String(i+1) + ":",0,0,2);
+      
+      // Format the time with leading zeros
+      String hourStr = String(alarm_hours[i]);
+      if(alarm_hours[i] < 10) hourStr = "0" + hourStr;
+      
+      String minStr = String(alarm_minitues[i]);
+      if(alarm_minitues[i] < 10) minStr = "0" + minStr;
+      
+      print_line(hourStr + ":" + minStr,0,20,2);
+      print_line("Active",0,40,2);
+      
+      delay(2000);
+    }
+  }
+  
+  if(!found_active) {
+    display.clearDisplay();
+    print_line("No active",0,0,2);
+    print_line("alarms",0,20,2);
+    delay(2000);
+  }
 }
