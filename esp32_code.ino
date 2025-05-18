@@ -27,6 +27,15 @@
 #define UTC_OFFSET_DST 0
 #define LDR_PIN 36 // analog pin
 
+// MQTT Topic names
+#define TOPIC_MAIN_POWER "medibox/main/power"
+#define TOPIC_LIGHT "medibox/light/value"
+#define TOPIC_LIGHT_TS "medibox/light/ts"
+#define TOPIC_LIGHT_TU "medibox/light/tu"
+#define TOPIC_THETA_OFFSET "medibox/params/theta_offset"
+#define TOPIC_GAMMA "medibox/params/gamma"
+#define TOPIC_TMED "medibox/params/tmed"
+
 char tempAr[6];
 // LDR Configuration
 // Global Variables
@@ -990,7 +999,7 @@ void recieveCallback(char *topic, byte *payload, unsigned int length)
 
   Serial.println();
 
-  if (strcmp(topic, "ENTC-ADMIN-MAIN-ON-OFF") == 0)
+  if (strcmp(topic, TOPIC_MAIN_POWER) == 0)
   {
     if (payloadCharAr[0] == '1')
     {
@@ -1003,31 +1012,31 @@ void recieveCallback(char *topic, byte *payload, unsigned int length)
       noTone(BUZZER);
     }
   }
-  else if (strcmp(topic, "ENTC-ADMIN-LIGHT-Tu") == 0)
+  else if (strcmp(topic, TOPIC_LIGHT_TU) == 0)
   {
     int new_tu = atoi(payloadCharAr);
     update_sampling_parameters(ts, new_tu);
     Serial.print("Updated tu = ");
     Serial.println(new_tu);
   }
-  else if (strcmp(topic, "ENTC-ADMIN-LIGHT-Ts") == 0)
+  else if (strcmp(topic, TOPIC_LIGHT_TS) == 0)
   {
     int new_ts = atoi(payloadCharAr);
     update_sampling_parameters(new_ts, tu);
     Serial.print("Updated ts = ");
     Serial.println(new_ts);
   }
-  else if (strcmp(topic, "medibox/theta_offset") == 0) {
+  else if (strcmp(topic, TOPIC_THETA_OFFSET) == 0) {
   theta_offset = atof(payloadCharAr);
   Serial.print("Updated theta_offset: ");
   Serial.println(theta_offset);
   }
-  else if (strcmp(topic, "medibox/gamma") == 0) {
+  else if (strcmp(topic, TOPIC_GAMMA) == 0) {
     gammma = atof(payloadCharAr);
     Serial.print("Updated gamma: ");
     Serial.println(gammma);
   }
-  else if (strcmp(topic, "medibox/tmed") == 0) {
+  else if (strcmp(topic, TOPIC_TMED) == 0) {
     Tmed = atof(payloadCharAr);
     Serial.print("Updated Tmed: ");
     Serial.println(Tmed);
@@ -1057,12 +1066,12 @@ void connectToBroker()
     if (mqttClient.connect("ESP32-75645365"))
     {
       Serial.println("connected");
-      mqttClient.subscribe("ENTC-ADMIN-MAIN-ON-OFF");
-      mqttClient.subscribe("ENTC-ADMIN-LIGHT-Tu");
-      mqttClient.subscribe("ENTC-ADMIN-LIGHT-Ts");
-      mqttClient.subscribe("medibox/theta_offset");
-      mqttClient.subscribe("medibox/gamma");
-      mqttClient.subscribe("medibox/tmed");
+      mqttClient.subscribe(TOPIC_MAIN_POWER);
+      mqttClient.subscribe(TOPIC_LIGHT_TU);
+      mqttClient.subscribe(TOPIC_LIGHT_TS);
+      mqttClient.subscribe(TOPIC_THETA_OFFSET);
+      mqttClient.subscribe(TOPIC_GAMMA);
+      mqttClient.subscribe(TOPIC_TMED);
     }
     else
     {
@@ -1082,7 +1091,7 @@ void publish_light_average()
   float avg = calculate_average_ldr();
   char buffer[10];
   dtostrf(avg, 4, 2, buffer);
-  mqttClient.publish("ENTC-ADMIN-LIGHT", buffer, true); // Retain = true
+  mqttClient.publish(TOPIC_LIGHT, buffer, true); // Retain = true
   Serial.println(buffer);
   lastLdrUpload = millis();
 }
